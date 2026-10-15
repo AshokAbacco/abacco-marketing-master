@@ -1,0 +1,765 @@
+// FIXED: CampaignDetail.jsx - Follow-up creation and preview fixes
+import React, { useEffect, useState } from "react";
+import { Send, Plus, Trash2, Eye, Mail, Users, Target, Zap, CheckCircle2, Calendar, Sparkles, X, UserCog, Lock, Clock, AlertTriangle } from "lucide-react";
+import { useDailyLimit } from "./DailyLimitBanner";
+import ShowsRecipients from "./ShowsRecipients";
+import { useParams } from "react-router-dom";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
+// ------------------------------
+// Enhanced UI components with green theme
+// ------------------------------
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-white/80 backdrop-blur-sm border border-emerald-200/50 rounded-2xl shadow-lg ${className}`}>{children}</div>
+);
+
+const CardHeader = ({ children }) => (
+  <div className="px-6 py-5 border-b border-emerald-100 bg-gradient-to-r from-emerald-50 to-teal-50">{children}</div>
+);
+
+const CardTitle = ({ children, className = "" }) => (
+  <h2 className={`text-xl font-bold text-emerald-600 ${className}`}>{children}</h2>
+);
+
+const CardContent = ({ children, className = "" }) => (
+  <div className={`p-6 ${className}`}>{children}</div>
+);
+
+const Button = ({ children, className = "", variant = "default", size = "md", ...props }) => {
+  const base = "inline-flex items-center justify-center gap-2 font-bold rounded-xl transition-all focus:outline-none transform hover:scale-105";
+  const variants = {
+    default: "bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:shadow-lg shadow-emerald-500/30",
+    outline: "border-2 border-emerald-200 text-emerald-700 hover:bg-emerald-50 hover:border-emerald-300",
+    ghost: "text-emerald-600 hover:bg-emerald-50",
+  };
+  const sizes = {
+    sm: "px-4 py-2 text-xs",
+    md: "px-6 py-3 text-sm",
+    icon: "p-3",
+  };
+
+  return (
+    <button {...props} className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}>
+      {children}
+    </button>
+  );
+};
+
+
+export default function CampaignDetail() {
+  const [campaigns, setCampaigns] = useState([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(true); // ✅ PERF FIX: track loading state for dropdown
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [loadedCampaign, setLoadedCampaign] = useState(null);
+  const [subjects, setSubjects] = useState([]);
+  const [followUpBody, setFollowUpBody] = useState("");
+  const [originalBody, setOriginalBody] = useState("");
+  const [preview, setPreview] = useState(false);
+  const [accounts, setAccounts] = useState([]);
+  const [pitches, setPitches] = useState([]);
+  const [selectedPitchId, setSelectedPitchId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const [sendingFollowup, setSendingFollowup] = useState(false);
+  const [modal, setModal] = useState({ open: false, type: "", message: "" });
+  const [showRecipientModal, setShowRecipientModal] = useState(false);
+  const [campaignData, setCampaignData] = useState(null);
+  const [followupLevel, setFollowupLevel] = useState(1);
+  const { id } = useParams();
+
+  // ── Daily limit ─────────────────────────────────────────────
+  const dailyLimit = useDailyLimit();
+
+
+  // ------------------------------
+  // Fetch campaigns
+  // ------------------------------
+  const fetchCampaigns = (level = 1) => {
+    setLoadingCampaigns(true); // ✅ show loading state immediately
+    fetch(`${API_BASE_URL}/api/campaigns`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        console.log("Campaign API:", data);
+
+        const allCampaigns = data.data || [];
+
+        // Block campaigns with an active (in-progress) follow-up
+        const campaignsWithActiveFollowups = new Set();
+
+        // Count completed follow-ups per parent
+        const followupCountMap = {};
+
+        allCampaigns.forEach(c => {
+          if (c.sendType === "followup" && c.parentCampaignId) {
+            if (c.status === "draft" || c.status === "sending" || c.status === "scheduled") {
+              campaignsWithActiveFollowups.add(c.parentCampaignId);
+            }
+            if (c.status === "completed") {
+              followupCountMap[c.parentCampaignId] =
+                (followupCountMap[c.parentCampaignId] || 0) + 1;
+            }
+          }
+        });
+
+        const filtered = allCampaigns
+          .filter(c => {
+            const completedCount = followupCountMap[c.id] || 0;
+            const isBase =
+              (c.sendType === "immediate" || c.sendType === "scheduled") &&
+              c.status === "completed" &&
+              !c.parentCampaignId &&
+              !campaignsWithActiveFollowups.has(c.id);
+
+            if (!isBase) return false;
+            if (completedCount >= 4) return false;
+
+            // Show only campaigns that match the selected follow-up level
+            return completedCount === level - 1;
+          })
+          .map(c => ({
+            ...c,
+            followupNumber: (followupCountMap[c.id] || 0) + 1
+          }));
+
+        setCampaigns(filtered);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingCampaigns(false)); // ✅ always clear loading
+  };
+  useEffect(() => {
+    fetchCampaigns(followupLevel);
+  }, [followupLevel]);
+
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/accounts`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setAccounts(data);
+        } else if (Array.isArray(data.data)) {
+          setAccounts(data.data);
+        } else {
+          setAccounts([]);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    const fetchPitches = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        const res = await fetch(`${API_BASE_URL}/api/pitches`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          const followupPitches = (data.data || []).filter(
+            p => p.type === "followup"
+          );
+          setPitches(followupPitches);
+        }
+      } catch (err) {
+        console.error("Failed to load pitches", err);
+      }
+    };
+
+    fetchPitches();
+  }, []);
+
+  
+
+  const getFromEmails = () => {
+    if (!loadedCampaign || !Array.isArray(accounts)) return [];
+
+    let ids = [];
+    try {
+      ids = JSON.parse(loadedCampaign.fromAccountIds || "[]");
+    } catch {}
+
+    return accounts
+      .filter(acc => ids.includes(acc.id))
+      .map(acc => acc.email);
+  };
+
+  const buildFollowupWithSignature = () => {
+    return followUpBody || "";
+  };
+
+  const handleSelectCampaign = (id) => {
+    setSelectedCampaignId(id);
+    const campaign = campaigns.find((c) => String(c.id) === String(id));
+
+    if (!campaign) return;
+
+    setLoadedCampaign(campaign);
+
+    try {
+      const parsedSubjects = JSON.parse(campaign.subject || "[]");
+      setSubjects(parsedSubjects.length ? parsedSubjects : [campaign.subject]);
+    } catch {
+      setSubjects([campaign.subject]);
+    }
+
+    // ✅ FIXED HERE
+    const firstRecipient = campaign.recipients?.find(r => r.sentBodyHtml);
+
+    setOriginalBody(
+      firstRecipient?.sentBodyHtml ||
+      campaign.bodyHtml ||
+      ""
+    );
+  };
+
+  // 🔥 FIX: Removed pitch requirement - users can now send custom follow-ups
+  const createFollowUp = async () => {
+    // ✅ FIXED: Only require campaign selection, not pitch
+    if (!loadedCampaign) {
+      setModal({
+        open: true,
+        type: "error",
+        message: "Please select a campaign to send follow-up.",
+      });
+      return;
+    }
+
+    // Also ensure body is not empty (extra safety)
+    const hasBody =
+      followUpBody &&
+      followUpBody.replace(/<[^>]*>/g, "").trim().length > 0;
+
+    if (!hasBody) {
+      setModal({
+        open: true,
+        type: "error",
+        message: "Please write a follow-up message before sending.",
+      });
+      return;
+    }
+
+    // ── Daily-limit guard ────────────────────────────────────
+    const followUpRecipientCount = (loadedCampaign.recipients || []).filter(
+      r => r.status === "sent" || r.status === "completed"
+    ).length;
+
+    if (dailyLimit && followUpRecipientCount > dailyLimit.remaining) {
+      setModal({
+        open: true,
+        type: "error",
+        message: `⚠️ Daily quota exceeded. You only have ${dailyLimit.remaining.toLocaleString()} email credits remaining today (limit: ${dailyLimit.dailyLimit.toLocaleString()}/day). This follow-up needs ${followUpRecipientCount.toLocaleString()} recipients. Please try again tomorrow.`,
+      });
+      return;
+    }
+    // ─────────────────────────────────────────────────────────
+
+    setSendingFollowup(true);
+
+    try {
+      const token = localStorage.getItem("token");
+
+      // Get the from account IDs from the parent campaign
+      let fromAccountIds = [];
+      try {
+        fromAccountIds = JSON.parse(loadedCampaign.fromAccountIds || "[]");
+      } catch {
+        fromAccountIds = [];
+      }
+
+      if (fromAccountIds.length === 0) {
+        setModal({
+          open: true,
+          type: "error",
+          message: "No sender accounts found in the original campaign.",
+        });
+        setSendingFollowup(false);
+        return;
+      }
+
+      // Build senderRecipientMap - distribute ONLY completed (sent) recipients across sender accounts
+     // ✅ CORRECT - keep each recipient with the account that originally sent to them
+      const recipients = (loadedCampaign.recipients || []).filter(
+        r => r.status === "sent" || r.status === "completed"
+      );
+      const senderRecipientMap = {};
+
+      recipients.forEach((recipient) => {
+        const accountId = recipient.accountId;  // ✅ use original sender account
+        if (!accountId) return;
+        if (!senderRecipientMap[accountId]) {
+          senderRecipientMap[accountId] = [];
+        }
+        senderRecipientMap[accountId].push(recipient.email);
+      });
+
+      console.log("Creating follow-up with payload:", {
+        baseCampaignId: loadedCampaign.id,
+        subjects,
+        bodyHtml: followUpBody,
+        senderRecipientMap
+      });
+
+      // 1️⃣ Create follow-up campaign
+      const res = await fetch(`${API_BASE_URL}/api/campaigns/followup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          baseCampaignId: loadedCampaign.id,
+          subjects: subjects,
+          bodyHtml: followUpBody,
+          senderRecipientMap: senderRecipientMap,
+        }),
+      });
+
+      const data = await res.json();
+      console.log("Create follow-up response:", data);
+
+      if (!data.success) {
+        throw new Error(data.message || "Failed to create follow-up");
+      }
+
+      // 2️⃣ Send the created follow-up immediately
+      const sendRes = await fetch(
+        `${API_BASE_URL}/api/campaigns/followup/${data.data.id}/send`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const sendData = await sendRes.json();
+      console.log("Send follow-up response:", sendData);
+
+      if (!sendData.success) {
+        throw new Error(sendData.message || "Failed to send follow-up campaign");
+      }
+
+      setModal({
+        open: true,
+        type: "success",
+        message: "Follow-up campaign created and sent successfully!",
+      });
+      window.location.href = "/campaigns";
+
+      // Reset form
+      setFollowUpBody("");
+      setSelectedPitchId("");
+      setLoadedCampaign(null);
+      setSelectedCampaignId("");
+      setPreview(false);
+      
+      // Refresh campaigns list
+      fetchCampaigns();
+
+    } catch (err) {
+      console.error("Follow-up error:", err);
+      setModal({
+        open: true,
+        type: "error",
+        message: err.message || "Failed to send follow-up. Please try again.",
+      });
+    } finally {
+      setSendingFollowup(false);
+    }
+  };
+
+  // Function to refresh campaign details after updating recipients
+  const fetchCampaignDetails = async () => {
+    if (!selectedCampaignId) return;
+    
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`${API_BASE_URL}/api/campaigns/${selectedCampaignId}/view`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setLoadedCampaign(data.data.campaign);
+      }
+    } catch (err) {
+      console.error("Failed to refresh campaign details", err);
+    }
+  };
+
+  const froms = getFromEmails();
+
+  return (
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50">
+      {/* Animated background elements */}
+      <div className="absolute top-0 left-0 w-96 h-96 bg-emerald-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob"></div>
+      <div className="absolute top-0 right-0 w-96 h-96 bg-teal-100 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000"></div>
+      <div className="absolute bottom-0 left-1/2 w-96 h-96 bg-cyan-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-4000"></div>
+
+      <div className="relative z-10 container mx-auto px-6 py-12">
+        {/* Header */}
+        <div className="text-center mb-12 space-y-3">
+          <h1 className="text-5xl py-2 font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600">
+           Follow-up Campaign
+          </h1>
+          <p className="text-emerald-700/80 text-lg font-medium max-w-2xl mx-auto">
+            Create powerful follow-up messages to re-engage your audience
+          </p>
+        </div>
+
+        <div className="grid grid-cols-12 gap-6">
+          {/* Main Content */}
+          <div className="col-span-8 space-y-6 relative z-10">
+            {/* Campaign Selection */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-gradient-to-br from-emerald-100 to-teal-100 rounded-xl">
+                      <Target className="text-emerald-600" size={20} />
+                    </div>
+                    <CardTitle>Select Campaign</CardTitle>
+                  </div>
+
+                  {/* Follow-up Level Selector */}
+                  <div className="flex gap-1">
+                    {[1, 2, 3, 4].map(level => (
+                      <button
+                        key={level}
+                        onClick={() => {
+                          setFollowupLevel(level);
+                          setSelectedCampaignId("");
+                          setLoadedCampaign(null);
+                        }}
+                        className={`px-3 py-2 text-xs font-bold rounded-xl border-2 transition-all transform hover:scale-105 ${
+                          followupLevel === level
+                            ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white border-emerald-600 shadow-lg shadow-emerald-500/30"
+                            : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                        }`}
+                      >
+                        {level === 1 ? "1st" : level === 2 ? "2nd" : level === 3 ? "3rd" : "4th"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <select
+                  value={selectedCampaignId}
+                  onChange={(e) => handleSelectCampaign(e.target.value)}
+                  disabled={loadingCampaigns}
+                  className="w-full px-5 py-3.5 border-2 border-emerald-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all bg-white/80 text-slate-800 font-medium disabled:opacity-60 disabled:cursor-wait"
+                >
+                  {/* ✅ PERF FIX: Show "Loading…" immediately while API fetches */}
+                  <option value="">
+                    {loadingCampaigns ? "⏳ Loading campaigns…" : campaigns.length === 0 ? "-- No eligible campaigns --" : "-- Choose a campaign --"}
+                  </option>
+                  {!loadingCampaigns && campaigns.map((c) => {
+                    const completedCount = c.recipients?.filter(r => r.status === "sent" || r.status === "completed").length || 0;
+                    const ordinal = c.followupNumber === 2 ? "2nd" : c.followupNumber === 3 ? "3rd" : c.followupNumber === 4 ? "4th" : "1st";
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {c.name} — {ordinal} Follow-up ({completedCount} recipients)
+                      </option>
+                    );
+                  })}
+                </select>
+              </CardContent>
+            </Card>
+
+            {/* Pitch Selection (Optional) */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-br from-emerald-100 to-teal-100 rounded-xl">
+                    <Sparkles className="text-emerald-600" size={20} />
+                  </div>
+                  <CardTitle>Select Follow-up Pitch (Optional)</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <select
+                  value={selectedPitchId}
+                  onChange={(e) => {
+                    const pitchId = e.target.value;
+                    setSelectedPitchId(pitchId);
+
+                    if (pitchId) {
+                      const pitch = pitches.find(p => String(p.id) === String(pitchId));
+                      if (pitch) {
+                        setFollowUpBody(pitch.bodyHtml || "");
+                      }
+                    }
+                  }}
+                  className="w-full px-5 py-3.5 border-2 border-emerald-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all bg-white/80 text-slate-800 font-medium"
+                >
+                  <option value="">-- None (Custom Message) --</option>
+                  {pitches.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </CardContent>
+            </Card>
+
+            {/* Follow-up Editor */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-br from-emerald-100 to-teal-100 rounded-xl">
+                    <Mail className="text-emerald-600" size={20} />
+                  </div>
+                  <CardTitle>Write Your Follow-up</CardTitle>
+                </div>
+              </CardHeader>
+
+              <CardContent className="space-y-4">
+                <div
+                  className="min-h-[300px] p-5 border-2 border-emerald-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white/90 text-base text-black leading-relaxed"
+                  contentEditable
+                  suppressContentEditableWarning
+                  onInput={(e) => setFollowUpBody(e.currentTarget.innerHTML)}
+                  dangerouslySetInnerHTML={{ __html: followUpBody }}
+                />
+
+                {/* ── Daily Limit Warning ──────────────────────────────── */}
+                {(() => {
+                  const recipientCount = (loadedCampaign?.recipients || []).filter(
+                    r => r.status === "sent" || r.status === "completed"
+                  ).length;
+                  const overLimit = dailyLimit && recipientCount > 0 && recipientCount > dailyLimit.remaining;
+                  return overLimit ? (
+                    <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl p-4 mt-2">
+                      <AlertTriangle size={18} className="text-red-500 mt-0.5 shrink-0" />
+                      <div>
+                        <p className="text-sm font-bold text-red-700">Daily Quota Exceeded</p>
+                        <p className="text-xs text-red-600 mt-0.5 leading-relaxed">
+                          You have only <strong>{dailyLimit.remaining.toLocaleString()}</strong> credits remaining today (out of{" "}
+                          {dailyLimit.dailyLimit.toLocaleString()}). This follow-up needs{" "}
+                          <strong>{recipientCount.toLocaleString()}</strong> recipients.
+                          Please try again tomorrow.
+                        </p>
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+
+                {/* Actions */}
+                <div className="flex justify-end gap-3 pt-4">
+                  <Button variant="outline" onClick={() => setPreview(!preview)}>
+                    <Eye className="w-5 h-5" /> Preview
+                  </Button>
+                  <Button
+                    onClick={createFollowUp}
+                    disabled={sendingFollowup || !loadedCampaign || (() => {
+                      const cnt = (loadedCampaign?.recipients || []).filter(
+                        r => r.status === "sent" || r.status === "completed"
+                      ).length;
+                      return dailyLimit && cnt > dailyLimit.remaining;
+                    })()}
+                  >
+                    {sendingFollowup ? (
+                      <span className="animate-pulse">Sending...</span>
+                    ) : (
+                      <>
+                        <Zap className="w-5 h-5" /> Create Follow-up
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </CardContent>
+          </Card>
+
+          {/* Preview panel */}
+          {preview && loadedCampaign && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-br from-emerald-100 to-teal-100 rounded-xl">
+                    <Eye className="text-emerald-600" size={20} />
+                  </div>
+                  <CardTitle>Email Preview</CardTitle>
+                </div>
+              </CardHeader>
+
+              <CardContent className="space-y-6 text-base text-black">
+
+                {/* 1. FOLLOW-UP (top) */}
+                <div className="border-2 border-emerald-200 rounded-xl p-5 bg-white shadow-sm">
+                  <div className="font-bold text-emerald-800 mb-3 uppercase tracking-wide text-sm">Follow-up</div>
+                  <div dangerouslySetInnerHTML={{ __html: buildFollowupWithSignature() }} />
+                </div>
+
+                {/* 2. THREAD HEADER (like Gmail) */}
+                <div className="border-t-2 border-emerald-200 pt-5 text-sm space-y-2 bg-gradient-to-br from-emerald-50 to-teal-50 p-5 rounded-xl border-2">
+                  <div className="font-bold text-emerald-900">From: <span className="font-normal text-slate-700">{froms[0] || "—"}</span></div>
+                  <div className="text-xs text-emerald-600 font-semibold">
+                    Sending will rotate between:
+                    <ul className="list-disc ml-5 mt-1">
+                      {froms.map(f => <li key={f}>{f}</li>)}
+                    </ul>
+                  </div>
+                  <div className="font-bold text-emerald-900">Sent: <span className="font-normal text-slate-700">{new Date(loadedCampaign.createdAt).toLocaleString()}</span></div>
+                  <div className="font-bold text-emerald-900">To: <span className="font-normal text-slate-700">{loadedCampaign.recipients?.[0]?.email || "—"}</span></div>
+                  <div className="text-xs text-emerald-600 font-semibold">
+                    Will send to total {loadedCampaign?.recipients?.filter(r => r.status === "sent" || r.status === "completed").length || 0} recipients (distributed automatically)
+                  </div>
+                   
+                  <div className="font-bold text-emerald-900">Subject: <span className="font-normal text-slate-700">{subjects[0]}</span></div>
+                </div>
+
+
+                {/* 3. ORIGINAL CAMPAIGN (bottom) */}
+                <div className="border-2 border-emerald-200 rounded-xl p-5 bg-white text-base text-black shadow-sm">
+                  <div className="font-bold text-emerald-800 mb-3 uppercase tracking-wide text-sm">Previous message</div>
+                  <div dangerouslySetInnerHTML={{ __html: originalBody }} />
+                </div>
+
+
+              </CardContent>
+            </Card>
+          )}
+
+          
+        </div>
+
+        {/* Right summary */}
+        <div className="col-span-4 relative z-10">
+          <Card className="sticky top-6">
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-gradient-to-br from-emerald-100 to-teal-100 rounded-xl">
+                  <Target className="text-emerald-600" size={18} />
+                </div>
+                <CardTitle className="text-base">Summary</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-5 text-sm">
+              {/* Campaign Name */}
+              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 p-4 rounded-xl border border-emerald-200">
+                <p className="text-xs text-emerald-700 font-bold uppercase tracking-wide mb-1.5">Campaign</p>
+                <p className="font-bold text-slate-900 text-base">
+                  {loadedCampaign?.name || "Not selected"}
+                </p>
+              </div>
+
+              {/* From Mail Accounts Count */}
+              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 p-4 rounded-xl border border-emerald-200">
+                <p className="text-xs text-emerald-700 font-bold uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                  <Mail size={12} />
+                  From Mail Accounts
+                </p>
+                <p className="font-black text-slate-900 text-2xl">
+                  {getFromEmails().length}
+                </p>
+              </div>
+
+
+              {/* Subjects Count */}
+              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 p-4 rounded-xl border border-emerald-200">
+                <p className="text-xs text-emerald-700 font-bold uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                  <Target size={12} />
+                  Subjects
+                </p>
+                <p className="font-black text-slate-900 text-2xl">
+                  {subjects.length}
+                </p>
+              </div>
+
+              {/* Recipients Count */}
+              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 p-4 rounded-xl border border-emerald-200">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs text-emerald-700 font-bold uppercase tracking-wide flex items-center gap-1.5">
+                    <Users size={12} />
+                    Recipients
+                  </p>
+                  <p className="font-black text-slate-900 text-2xl">
+                    {loadedCampaign?.recipients?.filter(r => r.status === "sent" || r.status === "completed").length || 0}
+                  </p>
+                </div>
+                
+                {loadedCampaign && (
+                  <button
+                    onClick={() => setShowRecipientModal(true)}
+                    className="w-full mt-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-lg hover:shadow-lg hover:scale-105 transition-all flex items-center justify-center gap-2"
+                  >
+                    <UserCog size={14} />
+                    Update Recipients
+                  </button>
+                )}
+              </div>
+            </CardContent>
+
+          </Card>
+        </div>
+
+        {modal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="bg-white/95 backdrop-blur-sm rounded-2xl p-8 w-full max-w-md shadow-2xl space-y-5 border-2 border-emerald-200 transform scale-100 animate-in">
+              
+              <div className="flex items-center gap-3">
+                {modal.type === "success" ? (
+                  <div className="p-3 bg-gradient-to-br from-emerald-100 to-teal-100 rounded-xl">
+                    <CheckCircle2 className="text-emerald-600" size={28} />
+                  </div>
+                ) : (
+                  <div className="p-3 bg-gradient-to-br from-red-100 to-orange-100 rounded-xl">
+                    <X className="text-red-600" size={28} />
+                  </div>
+                )}
+                <h2 className={`text-xl font-black ${
+                  modal.type === "success" ? "text-emerald-700" : "text-red-600"
+                }`}>
+                  {modal.type === "success" ? "Success!" : "Error"}
+                </h2>
+              </div>
+
+              <p className="text-base text-slate-700 font-medium leading-relaxed">
+                {modal.message}
+              </p>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={() => setModal({ open: false, type: "", message: "" })}
+                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-sm font-bold shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50 transform hover:scale-105 transition-all"
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        
+
+      </div>
+
+      {showRecipientModal && loadedCampaign && (
+        <ShowsRecipients
+          campaignId={selectedCampaignId}
+          onClose={() => setShowRecipientModal(false)}
+          onUpdated={() => {
+            fetchCampaignDetails();
+            setShowRecipientModal(false);
+          }}
+        />
+      )}
+    
+      </div>
+    </div>
+  );
+}
