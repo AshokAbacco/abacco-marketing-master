@@ -1,5 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useDailyLimit } from "./DailyLimitBanner";
+import {
+  PROVIDER_HOURLY_LIMITS,
+  PROVIDER_LABELS,
+  getProviderLimit,
+  normalizeProvider,
+} from "../../utils/providerLimits";
 import { AlertTriangle } from "lucide-react";
 import {
   Send,
@@ -495,25 +501,15 @@ export default function CreateCampaign() {
     }
   };
 
-  const LIMITS = {
-    gmail: 50,
-    gsuite: 80,
-    rediff: 40,
-    amazon: 60,
-    custom: 60
-  };
-
-  const getDefaultLimit = (provider) => {
-    const key = (provider || "custom").toLowerCase();
-    return LIMITS[key] || LIMITS.custom;
-  };
+  // Default /hr per provider: Gmail 40 · GSuite 150 · Rediff 30 · Yahoo 10
+  const getDefaultLimit = (provider) => getProviderLimit(provider);
 
   const getActualLimit = (accountId) => {
     if (customLimits[accountId]) {
       return customLimits[accountId];
     }
     const acc = accounts.find(a => a.id === accountId);
-    if (!acc) return 60;
+    if (!acc) return PROVIDER_HOURLY_LIMITS.custom;
     return getDefaultLimit(acc.provider);
   };
 
@@ -711,6 +707,15 @@ export default function CreateCampaign() {
 
               {showFromDropdown && (
                 <div className="relative z-50 mt-2 w-full bg-white/95 backdrop-blur-sm border border-emerald-200 rounded-xl shadow-2xl max-h-96 overflow-y-auto">
+                  {/* Provider default /hr limits */}
+                  <div className="sticky top-0 z-10 flex flex-wrap items-center gap-1.5 px-3 py-2 bg-emerald-50/95 border-b border-emerald-100 text-[11px]">
+                    <span className="font-semibold text-slate-600 mr-1">Default /hr:</span>
+                    {["gmail", "gsuite", "rediff", "yahoo"].map((p) => (
+                      <span key={p} className="px-2 py-0.5 rounded-full bg-white border border-emerald-200 text-emerald-700 font-medium">
+                        {PROVIDER_LABELS[p]} {PROVIDER_HOURLY_LIMITS[p]}
+                      </span>
+                    ))}
+                  </div>
                   {(() => {
                     // Build grouped view mirroring the sidebar structure
                     const ungrouped = availableAccounts.filter(
@@ -744,7 +749,7 @@ export default function CreateCampaign() {
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-slate-900 truncate">{acc.email}</p>
                           <p className="text-xs text-emerald-600 font-medium">
-                            {acc.provider?.toUpperCase()} • Limit: {getActualLimit(acc.id)}/hr
+                            {(PROVIDER_LABELS[normalizeProvider(acc.provider)] || acc.provider || "Custom").toUpperCase()} • Limit: {getActualLimit(acc.id)}/hr
                           </p>
                         </div>
                         {(() => {

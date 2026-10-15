@@ -60,19 +60,23 @@ export const loginUser = async (req, res) => {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    // ✅ Find user by email
-    const user = await prisma.user.findUnique({
-      where: { email },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        jobRole: true,
-        empId: true,
-        password: true,
-        isActive: true,
-      }
-    });
+    // ✅ Find user by email (exact match first, then case-insensitive)
+    const cleanEmail = String(email).trim();
+    const userSelect = {
+      id: true,
+      email: true,
+      name: true,
+      jobRole: true,
+      empId: true,
+      password: true,
+      isActive: true,
+    };
+    const user =
+      (await prisma.user.findUnique({ where: { email: cleanEmail }, select: userSelect })) ||
+      (await prisma.user.findFirst({
+        where: { email: { equals: cleanEmail, mode: "insensitive" } },
+        select: userSelect,
+      }));
 
     if (!user) {
       return res.status(400).json({ error: "Invalid email or password" });
@@ -98,8 +102,15 @@ export const loginUser = async (req, res) => {
 
     console.log("✅ Account is active");
 
-    // ✅ Password check (plain text comparison)
-    const isMatch = password === user.password;
+    // ✅ Password check — works with BOTH formats in the shared database:
+    //    • bcrypt hashes ($2a$/$2b$/$2y$…) written by the newer abacco-marketing app
+    //    • older plain-text rows
+    //    Read-only: the stored password is never modified here.
+    const stored = String(user.password || "");
+    const isBcrypt = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(stored);
+    const isMatch = isBcrypt
+      ? await bcrypt.compare(String(password), stored)
+      : String(password) === stored;
     if (!isMatch) {
       console.log("❌ Password mismatch");
       return res.status(400).json({ error: "Invalid email or password" });

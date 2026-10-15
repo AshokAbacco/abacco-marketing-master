@@ -3,6 +3,10 @@
 import React, { useState, useEffect } from "react";
 import { api } from "../../utils/api"; 
 
+// ✅ Mail-account limits (server enforces the same numbers)
+const MAX_ACCOUNTS_PER_USER = 70;
+const MAX_ACCOUNTS_PER_GROUP = 8;
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 export default function AddAccountManager({ onClose, onAccountAdded, pendingGroup }) {
@@ -142,6 +146,20 @@ const fetchAccounts = async () => {
 const addAccount = async (e) => {
   e.preventDefault();
   setError(null);
+
+  // ✅ Block a 9th account in a full group (server enforces this too)
+  if (pendingGroup?.groupId) {
+    const inGroup = accounts.filter(
+      (a) => String(a.groupId) === String(pendingGroup.groupId)
+    ).length;
+    if (inGroup >= MAX_ACCOUNTS_PER_GROUP) {
+      setError(
+        `"${pendingGroup.groupName}" already has ${MAX_ACCOUNTS_PER_GROUP} accounts. Remove an account from this group first, then add the new one.`
+      );
+      return;
+    }
+  }
+
   setDeletingInfo(null);
   setLoading(true);
 
@@ -273,6 +291,8 @@ const logoutAccount = async () => {
     // Update UI immediately
     const updatedAccounts = accounts.filter((a) => a.id !== accountToLogout);
     setAccounts(updatedAccounts);
+    // Free the slot immediately so a replacement can be added right away
+    setTotalCount((c) => Math.max(0, c - 1));
 
     if (selectedAccountId === accountToLogout) {
       if (updatedAccounts.length > 0) {
@@ -332,11 +352,20 @@ const logoutAccount = async () => {
         newForm.smtpPort = 587;
         break;
 
-      case "redff":
+      case "rediff":
         newForm.imapHost = "imap.rediffmailpro.com";
         newForm.imapPort = 993;
         newForm.smtpHost = "smtp.rediffmailpro.com";
         newForm.smtpPort = 587;
+        newForm.imapUser = form.email;
+        newForm.smtpUser = form.email;
+        break;
+
+      case "yahoo":
+        newForm.imapHost = "imap.mail.yahoo.com";
+        newForm.imapPort = 993;
+        newForm.smtpHost = "smtp.mail.yahoo.com";
+        newForm.smtpPort = 465;
         newForm.imapUser = form.email;
         newForm.smtpUser = form.email;
         break;
@@ -362,6 +391,15 @@ const logoutAccount = async () => {
 
     setForm(newForm);
   };
+
+  // ✅ Limits: 70 accounts per user, 8 per group
+  const userLimitReached = totalCount >= MAX_ACCOUNTS_PER_USER;
+  const userRemaining = Math.max(MAX_ACCOUNTS_PER_USER - totalCount, 0);
+  const groupCount = pendingGroup?.groupId
+    ? accounts.filter((a) => String(a.groupId) === String(pendingGroup.groupId)).length
+    : 0;
+  const groupLimitReached = !!pendingGroup?.groupId && groupCount >= MAX_ACCOUNTS_PER_GROUP;
+  const addBlocked = userLimitReached || groupLimitReached;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -398,30 +436,47 @@ const logoutAccount = async () => {
               <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-emerald-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
               </svg>
-              <p className="text-sm text-emerald-700">
+              <p className="text-sm text-emerald-700 flex-1">
                 Adding to group: <span className="font-bold">{pendingGroup.groupName}</span>
               </p>
+              <span className={`text-xs font-semibold ${groupLimitReached ? "text-red-600" : "text-emerald-700"}`}>
+                {groupCount}/{MAX_ACCOUNTS_PER_GROUP} in group
+              </span>
+            </div>
+          )}
+
+          {/* ✅ Group limit (8 per group) */}
+          {groupLimitReached && (
+            <div className="mb-4 px-4 py-3 bg-red-50 border border-red-300 rounded-xl flex items-start gap-3">
+              <span className="text-red-500 text-lg mt-0.5">🚫</span>
+              <div>
+                <p className="text-sm font-semibold text-red-700">Group Full</p>
+                <p className="text-xs text-red-600 mt-0.5">
+                  <strong>{pendingGroup.groupName}</strong> already has <strong>{MAX_ACCOUNTS_PER_GROUP} accounts</strong> (the maximum per group).
+                  To add a new account here, first remove one using its <strong>Logout</strong> button below — then the form will unlock for the replacement.
+                </p>
+              </div>
             </div>
           )}
 
           {/* ✅ Account limit warnings */}
-          {totalCount >= 80 ? (
+          {userLimitReached ? (
             <div className="mb-4 px-4 py-3 bg-red-50 border border-red-300 rounded-xl flex items-start gap-3">
               <span className="text-red-500 text-lg mt-0.5">🚫</span>
               <div>
                 <p className="text-sm font-semibold text-red-700">Account Limit Reached</p>
                 <p className="text-xs text-red-600 mt-0.5">
-                  You have reached the maximum limit of <strong>80 email accounts</strong>. Please remove an existing account to add a new one.
+                  You have reached the maximum limit of <strong>{MAX_ACCOUNTS_PER_USER} email accounts</strong>. Please remove an existing account to add a new one.
                 </p>
               </div>
             </div>
-          ) : totalCount >= 70 ? (
+          ) : totalCount >= MAX_ACCOUNTS_PER_USER - 10 ? (
             <div className="mb-4 px-4 py-3 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-3">
               <span className="text-amber-500 text-lg mt-0.5">⚠️</span>
               <div>
                 <p className="text-sm font-semibold text-amber-700">Approaching Account Limit</p>
                 <p className="text-xs text-amber-600 mt-0.5">
-                  You have used <strong>{totalCount} of 80</strong> accounts. Only <strong>{80 - totalCount}</strong> account{80 - totalCount === 1 ? "" : "s"} remaining.
+                  You have used <strong>{totalCount} of {MAX_ACCOUNTS_PER_USER}</strong> accounts. Only <strong>{userRemaining}</strong> account{userRemaining === 1 ? "" : "s"} remaining.
                 </p>
               </div>
             </div>
@@ -644,7 +699,8 @@ const logoutAccount = async () => {
               >
                 <option value="gmail">Gmail</option>
                 <option value="gsuite">G Suite</option>
-                <option value="redff">Rediff Mail</option>
+                <option value="rediff">Rediff Mail</option>
+                <option value="yahoo">Yahoo Mail</option>
                 <option value="amazon">Amazon WorkMail</option>
               </select>
             </div>
@@ -812,8 +868,15 @@ const logoutAccount = async () => {
                 {(form.provider === "gmail" || form.provider === "gsuite") && (
                   <>Gmail requires an App Password if 2FA is enabled.</>
                 )}
-                {form.provider === "redff" && (
-                  <>RedFF uses your normal email password (no app password needed).</>
+                {form.provider === "rediff" && (
+                  <>Rediff uses your normal email password (no app password needed).</>
+                )}
+                {form.provider === "yahoo" && (
+                  <>
+                    Yahoo requires an <b>App Password</b>: Yahoo Account → Account
+                    Security → <b>Generate app password</b>. Your normal Yahoo
+                    password will not work.
+                  </>
                 )}
 
 
@@ -831,9 +894,15 @@ const logoutAccount = async () => {
               <button
                 type="submit"
                 className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-green-600 text-white rounded-md hover:from-emerald-700 hover:to-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={loading || totalCount >= 80}
+                disabled={loading || addBlocked}
               >
-                {loading ? "Adding..." : totalCount >= 80 ? "Limit Reached (80/80)" : "Add Account"}
+                {loading
+                  ? "Adding..."
+                  : userLimitReached
+                  ? `Limit Reached (${MAX_ACCOUNTS_PER_USER}/${MAX_ACCOUNTS_PER_USER})`
+                  : groupLimitReached
+                  ? `Group Full (${MAX_ACCOUNTS_PER_GROUP}/${MAX_ACCOUNTS_PER_GROUP})`
+                  : "Add Account"}
               </button>
             </div>
           </form>
@@ -905,6 +974,8 @@ const logoutAccount = async () => {
                         ? "Gmail requires an App Password if 2FA is enabled."
                         : editingAccount.provider === "zoho"
                         ? "Zoho requires an App Password from your Zoho settings."
+                        : editingAccount.provider === "yahoo"
+                        ? "Yahoo requires an App Password (Account Security → Generate app password)."
                         : "Enter the app-specific password from your email provider."}
                     </p>
                   </div>

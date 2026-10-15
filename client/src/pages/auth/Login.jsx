@@ -18,7 +18,10 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await api.post("/api/users/login", { email, password });
+      const res = await api.post("/api/users/login", {
+        email: email.trim(),
+        password,
+      });
       
       console.log("Login response:", res.data); // Debug log
       
@@ -102,7 +105,7 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <style jsx>{`
+        <style>{`
           @keyframes scale-in {
             from {
               transform: scale(0);
@@ -291,7 +294,7 @@ export default function LoginPage() {
         </p>
       </div>
 
-      <style jsx>{`
+      <style>{`
         @keyframes blob {
           0%, 100% {
             transform: translate(0, 0) scale(1);

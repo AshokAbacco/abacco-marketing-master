@@ -5,7 +5,7 @@ import pLimit from "p-limit";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { decrypt } from "../utils/crypto.js";
+import { safeDecrypt } from "../utils/crypto.js";
 
 dotenv.config();
 
@@ -185,9 +185,7 @@ async function syncImap(prisma, account) {
   let imapPassword = null;
 
   if (typeof account.encryptedPass === "string") {
-    imapPassword = account.encryptedPass.includes(":")
-      ? decrypt(account.encryptedPass)
-      : account.encryptedPass;
+    imapPassword = safeDecrypt(account.encryptedPass);
   }
 
   if (!imapPassword) {

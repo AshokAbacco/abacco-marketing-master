@@ -2,10 +2,32 @@
 
 import nodemailer from "nodemailer";
 import prisma from "../prismaClient.js";
-import { decrypt } from "../utils/crypto.js";
+import { safeDecrypt } from "../utils/crypto.js";
 import cache from "../utils/cache.js";
 import dns from "dns/promises";
 
+
+
+// ── Default emails / hour per From account, by provider ──────────
+// Gmail 40 · GSuite 150 · Rediff 30 · Yahoo 10
+const PROVIDER_HOURLY_LIMITS = {
+  gmail: 40,
+  gsuite: 150,
+  rediff: 30,
+  yahoo: 10,
+  amazon: 60,
+  custom: 60,
+};
+// Older accounts were saved as "redff" (typo) — treat them as Rediff
+const PROVIDER_ALIASES = { redff: "rediff", rediffmail: "rediff", ymail: "yahoo" };
+function getAccountHourlyLimit(provider, accountId = null, customLimits = {}) {
+  if (accountId != null && customLimits && customLimits[accountId]) {
+    return Number(customLimits[accountId]);
+  }
+  const key = String(provider || "custom").toLowerCase().trim();
+  const norm = PROVIDER_ALIASES[key] || key;
+  return PROVIDER_HOURLY_LIMITS[norm] || PROVIDER_HOURLY_LIMITS.custom;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SECTION 1 — GLOBAL DAILY LIMIT HELPERS
@@ -250,20 +272,10 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-const SAFE_LIMITS = {
-  gmail:  50,
-  gsuite: 80,
-  rediff: 40,
-  amazon: 60,
-  custom: 60,
-};
-
+// Default /hr per provider: Gmail 40 · GSuite 150 · Rediff 30 · Yahoo 10
+// (see PROVIDER_HOURLY_LIMITS at top of this file)
 function getLimit(provider = "", accountId = null, customLimits = {}) {
-  if (accountId && customLimits[accountId]) {
-    return customLimits[accountId];
-  }
-  const key = provider.toLowerCase();
-  return SAFE_LIMITS[key] || SAFE_LIMITS.custom;
+  return getAccountHourlyLimit(provider, accountId, customLimits || {});
 }
 
 function getDomainLabel(email = "") {
@@ -371,11 +383,8 @@ function createTransporter(account, smtpPassword) {
 }
 
 function decryptPassword(account) {
-  let pass = account.encryptedPass;
-  if (typeof pass === "string" && pass.includes(":")) {
-    pass = decrypt(pass);
-  }
-  return pass;
+  // Only real "iv:cipher" values are decrypted; plain passwords pass through.
+  return safeDecrypt(account.encryptedPass);
 }
 
 async function resolveOriginalCampaignId(startId) {

@@ -9,6 +9,10 @@
 import express from "express";
 import { PrismaClient } from "@prisma/client";
 import { protect } from "../../middlewares/authMiddleware.js";
+import {
+  MAX_ACCOUNTS_PER_USER,
+  MAX_ACCOUNTS_PER_GROUP,
+} from "../../utils/providerLimits.js";
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -19,11 +23,34 @@ const prisma = new PrismaClient();
 ───────────────────────────────────────────────────────────── */
 router.get("/", protect, async (req, res) => {
   try {
-    const groups = await prisma.emailAccountGroup.findMany({
-      where: { userId: req.user.id },
-      orderBy: { createdAt: "asc" },
+    const [groups, totalAccounts] = await Promise.all([
+      prisma.emailAccountGroup.findMany({
+        where: { userId: req.user.id },
+        orderBy: { createdAt: "asc" },
+        include: {
+          _count: { select: { accounts: { where: { deleted: false } } } },
+        },
+      }),
+      prisma.emailAccount.count({
+        where: { userId: req.user.id, deleted: false },
+      }),
+    ]);
+
+    const data = groups.map(({ _count, ...g }) => ({
+      ...g,
+      accountCount: _count?.accounts || 0,
+      maxAccounts: MAX_ACCOUNTS_PER_GROUP,
+    }));
+
+    res.json({
+      success: true,
+      data,
+      limits: {
+        totalAccounts,
+        maxAccounts: MAX_ACCOUNTS_PER_USER,
+        maxPerGroup: MAX_ACCOUNTS_PER_GROUP,
+      },
     });
-    res.json({ success: true, data: groups });
   } catch (err) {
     console.error("GET /account-groups error:", err);
     res.status(500).json({ success: false, error: err.message });

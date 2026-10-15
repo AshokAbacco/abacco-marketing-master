@@ -9,6 +9,28 @@ import {
 } from "../services/campaignMailer.service.js";
 import cache from "../utils/cache.js";
 
+
+// ── Default emails / hour per From account, by provider ──────────
+// Gmail 40 · GSuite 150 · Rediff 30 · Yahoo 10
+const PROVIDER_HOURLY_LIMITS = {
+  gmail: 40,
+  gsuite: 150,
+  rediff: 30,
+  yahoo: 10,
+  amazon: 60,
+  custom: 60,
+};
+// Older accounts were saved as "redff" (typo) — treat them as Rediff
+const PROVIDER_ALIASES = { redff: "rediff", rediffmail: "rediff", ymail: "yahoo" };
+function getAccountHourlyLimit(provider, accountId = null, customLimits = {}) {
+  if (accountId != null && customLimits && customLimits[accountId]) {
+    return Number(customLimits[accountId]);
+  }
+  const key = String(provider || "custom").toLowerCase().trim();
+  const norm = PROVIDER_ALIASES[key] || key;
+  return PROVIDER_HOURLY_LIMITS[norm] || PROVIDER_HOURLY_LIMITS.custom;
+}
+
 const DAILY_LIMIT = 5000;
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -273,13 +295,9 @@ export const createCampaign = async (req, res) => {
     // 4️⃣ Provider limit / estimated completion
     const accounts = await prisma.emailAccount.findMany({ where: { id: { in: fromAccountIds } } });
 
-    const SAFE_LIMITS = { gmail: 50, gsuite: 80, rediff: 40, amazon: 60, custom: 60 };
     let totalHourlyCapacity = 0;
     for (const acc of accounts) {
-      const provider = (acc.provider || "custom").toLowerCase();
-      let limit = SAFE_LIMITS[provider] || SAFE_LIMITS.custom;
-      if (customLimits && customLimits[acc.id]) limit = customLimits[acc.id];
-      totalHourlyCapacity += limit;
+      totalHourlyCapacity += getAccountHourlyLimit(acc.provider, acc.id, customLimits || {});
     }
 
     const hoursNeeded         = recipients.length / totalHourlyCapacity;
@@ -767,8 +785,6 @@ export const getCampaignProgress = async (req, res) => {
       try { customLimits = JSON.parse(campaign.customLimits); } catch {}
     }
 
-    const SAFE_LIMITS = { gmail: 50, gsuite: 80, rediff: 40, amazon: 60, custom: 60 };
-
     function formatDuration(ms) {
       const totalMinutes = Math.ceil(ms / 60000);
       const h = Math.floor(totalMinutes / 60);
@@ -798,10 +814,8 @@ export const getCampaignProgress = async (req, res) => {
     }
 
     for (const row of Object.values(grouped)) {
-      const provider = (row.domain || "custom").toLowerCase();
-      let limit = SAFE_LIMITS[provider] || SAFE_LIMITS.custom;
       const acc = accounts.find(a => a.email === row.email);
-      if (acc && customLimits[acc.id]) limit = customLimits[acc.id];
+      const limit = getAccountHourlyLimit(row.domain, acc?.id, customLimits);
       const remainingMsNeeded = (row.processing / limit) * 3_600_000;
       row.eta = row.processing === 0 ? "Done" : formatDuration(remainingMsNeeded);
     }

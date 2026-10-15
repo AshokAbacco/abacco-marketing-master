@@ -7,6 +7,10 @@ import { runSyncForAccount } from "../../services/imap.service.js";
 import { ImapFlow } from "imapflow";
 import cache from "../../utils/cache.js"; // add at top
 import {
+  MAX_ACCOUNTS_PER_USER,
+  MAX_ACCOUNTS_PER_GROUP,
+} from "../../utils/providerLimits.js";
+import {
   startAccountDeletion,
   resumeAccountDeletions,
 } from "../../services/accountDeletionWorker.js";
@@ -72,7 +76,7 @@ const PROVIDER_MAP = {
     imapHost: "imap.mail.yahoo.com",
     imapPort: 993,
     smtpHost: "smtp.mail.yahoo.com",
-    smtpPort: 587,
+    smtpPort: 465,
   },
   outlook: {
     imapHost: "outlook.office365.com",
@@ -139,8 +143,12 @@ const UNIVERSAL_PROVIDER_SETTINGS = {
     imapPort: 993,
     smtpPort: 465,
   },
-
-
+  yahoo: {
+    imapHost: "imap.mail.yahoo.com",
+    smtpHost: "smtp.mail.yahoo.com",
+    imapPort: 993,
+    smtpPort: 465,
+  },
 };
 
 async function detectProviderFromMx(domain) {
@@ -196,6 +204,10 @@ async function detectEmailProvider(domain) {
     // GOOGLE WORKSPACE / GMAIL
     if (mxHost.includes("google") || mxHost.includes("googlehosted"))
       return "gmail";
+
+    // YAHOO MAIL
+    if (mxHost.includes("yahoodns") || mxHost.includes("mail.yahoo"))
+      return "yahoo";
 
     // OFFICE 365
     if (mxHost.includes("outlook") || mxHost.includes("office365"))
@@ -306,16 +318,39 @@ router.post("/", protect, async (req, res) => {
       return res.status(400).json({ error: "Account already exists" });
     }
 
-    // ✅ Enforce 80-account limit per user
+    // ✅ Enforce 70-account limit per user (accounts mid-delete don't count)
     const accountCount = await prisma.emailAccount.count({
-      where: { userId: req.user.id },
+      where: { userId: req.user.id, deleted: false },
     });
-    if (accountCount >= 80) {
+    if (accountCount >= MAX_ACCOUNTS_PER_USER) {
       return res.status(403).json({
-        error: "Account limit reached. You can add a maximum of 80 email accounts.",
+        error: `Account limit reached. You can add a maximum of ${MAX_ACCOUNTS_PER_USER} email accounts.`,
         limitReached: true,
         count: accountCount,
+        max: MAX_ACCOUNTS_PER_USER,
       });
+    }
+
+    // ✅ Enforce 8-account limit per group
+    if (groupId) {
+      const group = await prisma.emailAccountGroup.findFirst({
+        where: { id: parseInt(groupId), userId: req.user.id },
+        select: { id: true, name: true },
+      });
+      if (!group) {
+        return res.status(404).json({ error: "Group not found" });
+      }
+      const groupCount = await prisma.emailAccount.count({
+        where: { groupId: group.id, deleted: false },
+      });
+      if (groupCount >= MAX_ACCOUNTS_PER_GROUP) {
+        return res.status(403).json({
+          error: `Group "${group.name}" is full. Each group can hold a maximum of ${MAX_ACCOUNTS_PER_GROUP} email accounts.`,
+          groupLimitReached: true,
+          count: groupCount,
+          max: MAX_ACCOUNTS_PER_GROUP,
+        });
+      }
     }
 
     /* -------------------------
@@ -412,8 +447,8 @@ router.post("/", protect, async (req, res) => {
       },
     });
 
-    // ✅ VERY IMPORTANT — CLEAR CACHE
-    cache.del(`accounts:${req.user.id}`);
+    // ✅ VERY IMPORTANT — CLEAR CACHE (all/group-scoped keys for this user)
+    clearAccountsCache(req.user.id);
 
     // Trigger initial sync in background
     runSyncForAccount(prisma, email)

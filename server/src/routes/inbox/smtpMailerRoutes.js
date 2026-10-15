@@ -3,7 +3,7 @@ import express from "express";
 import nodemailer from "nodemailer";
 import multer from "multer";
 import crypto from "crypto";
-import { decrypt } from "../../utils/crypto.js";
+import { safeDecrypt } from "../../utils/crypto.js";
 import cache from "../../utils/cache.js";
 import prisma from "../../prismaClient.js"; // ✅ shared singleton — no extra connection pool
 
@@ -156,11 +156,7 @@ router.post("/send", upload.array("attachments"), async (req, res) => {
     let smtpPassword = null;
 
     if (typeof account.encryptedPass === "string") {
-      if (account.encryptedPass.includes(":")) {
-        smtpPassword = decrypt(account.encryptedPass);
-      } else {
-        smtpPassword = account.encryptedPass;
-      }
+      smtpPassword = safeDecrypt(account.encryptedPass);
     }
 
     if (!smtpPassword) {
